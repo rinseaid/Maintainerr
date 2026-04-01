@@ -3,11 +3,14 @@ import {
   MediaItem,
   MetadataProviderPreference,
 } from '@maintainerr/contracts';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { OnEvent } from '@nestjs/event-emitter';
 import { MediaServerFactory } from '../api/media-server/media-server.factory';
 import { MaintainerrLogger } from '../logging/logs.service';
 import { SettingsService } from '../settings/settings.service';
+import { MetadataIdCache } from './entities/metadata-id-cache.entity';
 import {
   IMetadataProvider,
   MetadataProviders,
@@ -25,11 +28,9 @@ export class MetadataService {
   private preference: MetadataProviderPreference =
     MetadataProviderPreference.TMDB_PRIMARY;
 
-  private resolvedIdsCache = new Map<string, ResolvedMediaIds | undefined>();
-
-  clearResolvedIdsCache(): void {
-    this.resolvedIdsCache.clear();
-  }
+  private static readonly CACHE_TTL_DAYS = 30;
+  // L1: in-memory for same-process hits (fast); L2: SQLite for cross-restart persistence
+  private readonly l1Cache = new Map<string, ResolvedMediaIds | undefined>();
 
   constructor(
     @Inject(MetadataProviders)
@@ -37,14 +38,33 @@ export class MetadataService {
     private readonly mediaServerFactory: MediaServerFactory,
     private readonly settings: SettingsService,
     private readonly logger: MaintainerrLogger,
+    @InjectRepository(MetadataIdCache)
+    private readonly cacheRepo: Repository<MetadataIdCache>,
   ) {
     logger.setContext(MetadataService.name);
   }
 
-  onApplicationBootstrap() {
+  async onApplicationBootstrap() {
     this.preference =
       this.settings.metadata_provider_preference ??
       MetadataProviderPreference.TMDB_PRIMARY;
+    await this.evictExpiredCacheEntries();
+  }
+
+  private async evictExpiredCacheEntries(): Promise<void> {
+    const cutoff = this.cacheCutoffDate();
+    const deleted = await this.cacheRepo.delete({ cachedAt: LessThan(cutoff) });
+    if (deleted.affected > 0) {
+      this.logger.log(
+        `Evicted ${deleted.affected} expired metadata ID cache entries`,
+      );
+    }
+  }
+
+  private cacheCutoffDate(): Date {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - MetadataService.CACHE_TTL_DAYS);
+    return cutoff;
   }
 
   @OnEvent(MaintainerrEvent.Settings_Updated)
@@ -188,13 +208,38 @@ export class MetadataService {
     item: MediaItem,
     requiredProviderKeys?: string | string[],
   ): Promise<ResolvedMediaIds | undefined> {
-    if (!requiredProviderKeys && this.resolvedIdsCache.has(item.id)) {
-      return this.resolvedIdsCache.get(item.id);
+    // Cache only applies to the common case (no specific provider requirements)
+    if (requiredProviderKeys) {
+      return this._resolveIdsFromMediaItem(item, requiredProviderKeys);
     }
-    const result = await this._resolveIdsFromMediaItem(item, requiredProviderKeys);
-    if (!requiredProviderKeys) {
-      this.resolvedIdsCache.set(item.id, result);
+
+    // L1: in-memory hit
+    if (this.l1Cache.has(item.id)) {
+      return this.l1Cache.get(item.id);
     }
+
+    // L2: SQLite hit
+    const cached = await this.cacheRepo.findOne({
+      where: { mediaServerId: item.id },
+    });
+    if (cached && cached.cachedAt >= this.cacheCutoffDate()) {
+      const resolved = JSON.parse(cached.resolvedIds) as ResolvedMediaIds | null;
+      const result = resolved ?? undefined;
+      this.l1Cache.set(item.id, result);
+      return result;
+    }
+
+    // Cache miss — resolve and write through to both layers
+    const result = await this._resolveIdsFromMediaItem(item);
+    this.l1Cache.set(item.id, result);
+    await this.cacheRepo.upsert(
+      {
+        mediaServerId: item.id,
+        resolvedIds: JSON.stringify(result ?? null),
+        cachedAt: new Date(),
+      },
+      ['mediaServerId'],
+    );
     return result;
   }
 

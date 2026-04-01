@@ -6,7 +6,6 @@ import {
 } from '@maintainerr/contracts';
 import { Injectable } from '@nestjs/common';
 import { MediaServerFactory } from '../../api/media-server/media-server.factory';
-import { MetadataService } from '../../metadata/metadata.service';
 import { Application } from '../constants/rules.constants';
 import { RuleDto } from '../dtos/rule.dto';
 import { RulesDto } from '../dtos/rules.dto';
@@ -27,7 +26,6 @@ export class ValueGetterService {
     private readonly tautulliGetter: TautulliGetterService,
     private readonly jellyfinGetter: JellyfinGetterService,
     private readonly mediaServerFactory: MediaServerFactory,
-    private readonly metadataService: MetadataService,
   ) {}
 
   async get(
