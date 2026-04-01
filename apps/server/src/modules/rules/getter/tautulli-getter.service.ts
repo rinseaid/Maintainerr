@@ -37,7 +37,7 @@ export class TautulliGetterService {
   }
 
   private historyCache = new Map<string, TautulliHistoryItem[] | null>();
-  private metadataCache = new Map<number, TautulliMetadata>();
+  private metadataCache = new Map<string, TautulliMetadata>();
 
   clearCache(): void {
     this.historyCache.clear();
