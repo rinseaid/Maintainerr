@@ -105,9 +105,15 @@ export class ValueGetterService {
   }
 
   clearCaches(): void {
-    // Only Tautulli history needs to be reset — watch state changes between runs.
-    // Sonarr series, Radarr movies, and metadata ID resolution are stable across
-    // runs and are kept warm for the lifetime of the process.
+    // Tautulli history resets each run — watch state changes in real time.
     this.tautulliGetter.clearCache();
+    // Sonarr/Radarr full objects are large — clear between run cycles to avoid
+    // unbounded memory growth. The warm-guard prevents redundant bulk fetches
+    // within a single run cycle when multiple collections share the same instance.
+    this.sonarrGetter.clearSeriesCache();
+    this.radarrGetter.clearMoviesCache();
+    // Metadata ID resolution (TMDB/TVDB lookups) persists for the lifetime of
+    // the process — these are tiny objects and never change unless you rematch
+    // in Plex, eliminating the most expensive external API calls on subsequent runs.
   }
 }
