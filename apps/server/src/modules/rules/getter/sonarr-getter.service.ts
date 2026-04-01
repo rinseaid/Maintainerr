@@ -44,6 +44,43 @@ export class SonarrGetterService {
     ).props;
   }
 
+  private seriesByTvdbId = new Map<number, SonarrSeries>();
+  private cachedSonarrSettingsId: number | null = null;
+
+  async warmSeriesCache(sonarrSettingsId: number): Promise<void> {
+    if (
+      this.cachedSonarrSettingsId === sonarrSettingsId &&
+      this.seriesByTvdbId.size > 0
+    ) {
+      return;
+    }
+    try {
+      const sonarrApiClient = await this.servarrService.getSonarrApiClient(
+        sonarrSettingsId,
+      );
+      const allSeries = await sonarrApiClient.getSeries();
+      this.seriesByTvdbId.clear();
+      for (const series of allSeries) {
+        if (series.tvdbId) {
+          this.seriesByTvdbId.set(series.tvdbId, series);
+        }
+      }
+      this.cachedSonarrSettingsId = sonarrSettingsId;
+      this.logger.log(
+        `Warmed Sonarr series cache with ${this.seriesByTvdbId.size} entries`,
+      );
+    } catch (e) {
+      this.logger.warn(
+        'Failed to warm Sonarr series cache, falling back to per-item lookups',
+      );
+    }
+  }
+
+  clearSeriesCache(): void {
+    this.seriesByTvdbId.clear();
+    this.cachedSonarrSettingsId = null;
+  }
+
   private async getMediaServer(): Promise<IMediaServerService> {
     return this.mediaServerFactory.getService();
   }
@@ -112,11 +149,32 @@ export class SonarrGetterService {
         ruleGroup.collection.sonarrSettingsId,
       );
 
-      const matchedResult = await findServarrLookupMatch(lookupCandidates, {
-        tmdb: (lookupId) => sonarrApiClient.getSeriesByTmdbId(lookupId),
-        tvdb: (lookupId) => sonarrApiClient.getSeriesByTvdbId(lookupId),
-      });
-      const showResponse: SonarrSeries | undefined = matchedResult?.result;
+      let showResponse: SonarrSeries | undefined;
+      if (this.seriesByTvdbId.size > 0) {
+        const tvdbCandidate = lookupCandidates.find(
+          (c) => c.providerKey === 'tvdb',
+        );
+        if (tvdbCandidate) {
+          showResponse = this.seriesByTvdbId.get(tvdbCandidate.id);
+        }
+        if (!showResponse) {
+          // Cache miss or no tvdb ID — fall back to API
+          const matchedResult = await findServarrLookupMatch(lookupCandidates, {
+            tmdb: (lookupId) => sonarrApiClient.getSeriesByTmdbId(lookupId),
+            tvdb: (lookupId) => sonarrApiClient.getSeriesByTvdbId(lookupId),
+          });
+          showResponse = matchedResult?.result;
+          if (showResponse?.tvdbId) {
+            this.seriesByTvdbId.set(showResponse.tvdbId, showResponse);
+          }
+        }
+      } else {
+        const matchedResult = await findServarrLookupMatch(lookupCandidates, {
+          tmdb: (lookupId) => sonarrApiClient.getSeriesByTmdbId(lookupId),
+          tvdb: (lookupId) => sonarrApiClient.getSeriesByTvdbId(lookupId),
+        });
+        showResponse = matchedResult?.result;
+      }
 
       if (!showResponse?.id) {
         const attemptedIds = formatServarrLookupCandidates(lookupCandidates);

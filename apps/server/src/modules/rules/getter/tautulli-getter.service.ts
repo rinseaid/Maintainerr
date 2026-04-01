@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { PlexApiService } from '../../api/plex-api/plex-api.service';
 import {
   TautulliApiService,
+  TautulliHistoryItem,
   TautulliHistoryRequestOptions,
   TautulliMetadata,
 } from '../../api/tautulli-api/tautulli-api.service';
@@ -35,6 +36,14 @@ export class TautulliGetterService {
     ).props;
   }
 
+  private historyCache = new Map<string, TautulliHistoryItem[] | null>();
+  private metadataCache = new Map<number, TautulliMetadata>();
+
+  clearCache(): void {
+    this.historyCache.clear();
+    this.metadataCache.clear();
+  }
+
   async get(
     id: number,
     libItem: MediaItem,
@@ -43,7 +52,11 @@ export class TautulliGetterService {
   ) {
     try {
       const prop = this.appProperties.find((el) => el.id === id);
-      const metadata = await this.tautulliApi.getMetadata(libItem.id);
+      let metadata = this.metadataCache.get(libItem.id);
+      if (!metadata) {
+        metadata = await this.tautulliApi.getMetadata(libItem.id);
+        this.metadataCache.set(libItem.id, metadata);
+      }
       const collection = await this.collectionRepository.findOne({
         where: { id: ruleGroup.collection.id },
       });
@@ -209,6 +222,11 @@ export class TautulliGetterService {
   }
 
   private async getHistoryForMetadata(metadata: TautulliMetadata) {
+    const cacheKey = `${metadata.media_type}:${metadata.rating_key}`;
+    if (this.historyCache.has(cacheKey)) {
+      return this.historyCache.get(cacheKey);
+    }
+
     const options: TautulliHistoryRequestOptions = {};
 
     if (metadata.media_type == 'movie' || metadata.media_type == 'episode') {
@@ -222,6 +240,7 @@ export class TautulliGetterService {
     }
 
     const history = await this.tautulliApi.getHistory(options);
+    this.historyCache.set(cacheKey, history);
     return history;
   }
 

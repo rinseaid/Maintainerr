@@ -85,4 +85,18 @@ export class ValueGetterService {
       }
     }
   }
+
+  async warmCaches(ruleGroup: RulesDto): Promise<void> {
+    this.tautulliGetter.clearCache();
+    if (ruleGroup.collection?.sonarrSettingsId) {
+      await this.sonarrGetter.warmSeriesCache(
+        ruleGroup.collection.sonarrSettingsId,
+      );
+    }
+  }
+
+  clearCaches(): void {
+    this.tautulliGetter.clearCache();
+    this.sonarrGetter.clearSeriesCache();
+  }
 }

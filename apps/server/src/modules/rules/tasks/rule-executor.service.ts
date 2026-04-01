@@ -26,6 +26,7 @@ import { RuleConstants } from '../constants/rules.constants';
 import { RulesDto } from '../dtos/rules.dto';
 import { RuleGroup } from '../entities/rule-group.entities';
 import { RuleComparatorServiceFactory } from '../helpers/rule.comparator.service';
+import { ValueGetterService } from '../getter/getter.service';
 import { RulesService } from '../rules.service';
 import { RuleExecutorProgressService } from './rule-executor-progress.service';
 
@@ -60,6 +61,7 @@ export class RuleExecutorService {
     private readonly eventEmitter: EventEmitter2,
     private readonly progressManager: RuleExecutorProgressService,
     private readonly logger: MaintainerrLogger,
+    private readonly valueGetter: ValueGetterService,
   ) {
     logger.setContext(RuleExecutorService.name);
     this.ruleConstants = new RuleConstants();
@@ -119,6 +121,7 @@ export class RuleExecutorService {
         cacheManager.flushAll();
 
         const comparator = this.comparatorFactory.create();
+        await this.valueGetter.warmCaches(ruleGroup);
         const mediaServer = await this.getMediaServer();
 
         const mediaItemCount = await mediaServer.getLibraryContentCount(
@@ -180,6 +183,7 @@ export class RuleExecutorService {
             abortSignal,
           );
 
+          this.valueGetter.clearCaches();
           this.logger.log(`Execution of rules for '${ruleGroup.name}' done.`);
         }
 
