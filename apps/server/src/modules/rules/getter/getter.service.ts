@@ -89,8 +89,9 @@ export class ValueGetterService {
   }
 
   async warmCaches(ruleGroup: RulesDto): Promise<void> {
+    // Tautulli history reflects real-time watch activity — reset each run
     this.tautulliGetter.clearCache();
-    this.metadataService.clearResolvedIdsCache();
+    // Sonarr/Radarr/metadata caches persist across runs — warm only if cold
     if (ruleGroup.collection?.sonarrSettingsId) {
       await this.sonarrGetter.warmSeriesCache(
         ruleGroup.collection.sonarrSettingsId,
@@ -104,9 +105,9 @@ export class ValueGetterService {
   }
 
   clearCaches(): void {
+    // Only Tautulli history needs to be reset — watch state changes between runs.
+    // Sonarr series, Radarr movies, and metadata ID resolution are stable across
+    // runs and are kept warm for the lifetime of the process.
     this.tautulliGetter.clearCache();
-    this.sonarrGetter.clearSeriesCache();
-    this.radarrGetter.clearMoviesCache();
-    this.metadataService.clearResolvedIdsCache();
   }
 }
