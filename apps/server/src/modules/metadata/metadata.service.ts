@@ -216,7 +216,7 @@ export class MetadataService {
     const cached = await this.cacheRepo.findOne({
       where: { mediaServerId: item.id },
     });
-    if (cached && cached.cachedAt >= this.cacheCutoffDate()) {
+    if (cached && new Date(cached.cachedAt as unknown as string) >= this.cacheCutoffDate()) {
       return JSON.parse(cached.resolvedIds) as ResolvedMediaIds ?? undefined;
     }
 
