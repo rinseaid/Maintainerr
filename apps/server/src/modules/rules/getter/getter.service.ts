@@ -6,6 +6,7 @@ import {
 } from '@maintainerr/contracts';
 import { Injectable } from '@nestjs/common';
 import { MediaServerFactory } from '../../api/media-server/media-server.factory';
+import { MetadataService } from '../../metadata/metadata.service';
 import { Application } from '../constants/rules.constants';
 import { RuleDto } from '../dtos/rule.dto';
 import { RulesDto } from '../dtos/rules.dto';
@@ -26,6 +27,7 @@ export class ValueGetterService {
     private readonly tautulliGetter: TautulliGetterService,
     private readonly jellyfinGetter: JellyfinGetterService,
     private readonly mediaServerFactory: MediaServerFactory,
+    private readonly metadataService: MetadataService,
   ) {}
 
   async get(
@@ -88,9 +90,15 @@ export class ValueGetterService {
 
   async warmCaches(ruleGroup: RulesDto): Promise<void> {
     this.tautulliGetter.clearCache();
+    this.metadataService.clearResolvedIdsCache();
     if (ruleGroup.collection?.sonarrSettingsId) {
       await this.sonarrGetter.warmSeriesCache(
         ruleGroup.collection.sonarrSettingsId,
+      );
+    }
+    if (ruleGroup.collection?.radarrSettingsId) {
+      await this.radarrGetter.warmMoviesCache(
+        ruleGroup.collection.radarrSettingsId,
       );
     }
   }
@@ -98,5 +106,7 @@ export class ValueGetterService {
   clearCaches(): void {
     this.tautulliGetter.clearCache();
     this.sonarrGetter.clearSeriesCache();
+    this.radarrGetter.clearMoviesCache();
+    this.metadataService.clearResolvedIdsCache();
   }
 }

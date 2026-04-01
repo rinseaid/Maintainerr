@@ -25,6 +25,12 @@ export class MetadataService {
   private preference: MetadataProviderPreference =
     MetadataProviderPreference.TMDB_PRIMARY;
 
+  private resolvedIdsCache = new Map<string, ResolvedMediaIds | undefined>();
+
+  clearResolvedIdsCache(): void {
+    this.resolvedIdsCache.clear();
+  }
+
   constructor(
     @Inject(MetadataProviders)
     private readonly providers: IMetadataProvider[],
@@ -179,6 +185,20 @@ export class MetadataService {
   }
 
   async resolveIdsFromMediaItem(
+    item: MediaItem,
+    requiredProviderKeys?: string | string[],
+  ): Promise<ResolvedMediaIds | undefined> {
+    if (!requiredProviderKeys && this.resolvedIdsCache.has(item.id)) {
+      return this.resolvedIdsCache.get(item.id);
+    }
+    const result = await this._resolveIdsFromMediaItem(item, requiredProviderKeys);
+    if (!requiredProviderKeys) {
+      this.resolvedIdsCache.set(item.id, result);
+    }
+    return result;
+  }
+
+  private async _resolveIdsFromMediaItem(
     item: MediaItem,
     requiredProviderKeys?: string | string[],
   ): Promise<ResolvedMediaIds | undefined> {

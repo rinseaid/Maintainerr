@@ -1,5 +1,6 @@
 import { MediaItem } from '@maintainerr/contracts';
 import { Injectable } from '@nestjs/common';
+import { RadarrMovie } from '../../api/servarr-api/interfaces/radarr.interface';
 import { ServarrService } from '../../api/servarr-api/servarr.service';
 import { MaintainerrLogger } from '../../logging/logs.service';
 import { MetadataService } from '../../metadata/metadata.service';
@@ -30,6 +31,43 @@ export class RadarrGetterService {
     this.plexProperties = ruleConstanst.applications.find(
       (el) => el.id === Application.RADARR,
     ).props;
+  }
+
+  private moviesByTmdbId = new Map<number, RadarrMovie>();
+  private cachedRadarrSettingsId: number | null = null;
+
+  async warmMoviesCache(radarrSettingsId: number): Promise<void> {
+    if (
+      this.cachedRadarrSettingsId === radarrSettingsId &&
+      this.moviesByTmdbId.size > 0
+    ) {
+      return;
+    }
+    try {
+      const radarrApiClient = await this.servarrService.getRadarrApiClient(
+        radarrSettingsId,
+      );
+      const allMovies = await radarrApiClient.getMovies();
+      this.moviesByTmdbId.clear();
+      for (const movie of allMovies) {
+        if (movie.tmdbId) {
+          this.moviesByTmdbId.set(movie.tmdbId, movie);
+        }
+      }
+      this.cachedRadarrSettingsId = radarrSettingsId;
+      this.logger.log(
+        `Warmed Radarr movies cache with ${this.moviesByTmdbId.size} entries`,
+      );
+    } catch (e) {
+      this.logger.warn(
+        'Failed to warm Radarr movies cache, falling back to per-item lookups',
+      );
+    }
+  }
+
+  clearMoviesCache(): void {
+    this.moviesByTmdbId.clear();
+    this.cachedRadarrSettingsId = null;
   }
 
   async get(
@@ -79,11 +117,32 @@ export class RadarrGetterService {
         ruleGroup.collection.radarrSettingsId,
       );
 
-      const matchedResult = await findServarrLookupMatch(lookupCandidates, {
-        tmdb: (lookupId) => radarrApiClient.getMovieByTmdbId(lookupId),
-        tvdb: (lookupId) => radarrApiClient.getMovieByTvdbId(lookupId),
-      });
-      const movieResponse = matchedResult?.result;
+      let movieResponse: RadarrMovie | undefined;
+      if (this.moviesByTmdbId.size > 0) {
+        const tmdbCandidate = lookupCandidates.find(
+          (c) => c.providerKey === 'tmdb',
+        );
+        if (tmdbCandidate) {
+          movieResponse = this.moviesByTmdbId.get(tmdbCandidate.id);
+        }
+        if (!movieResponse) {
+          // Cache miss or no tmdb ID — fall back to API
+          const matchedResult = await findServarrLookupMatch(lookupCandidates, {
+            tmdb: (lookupId) => radarrApiClient.getMovieByTmdbId(lookupId),
+            tvdb: (lookupId) => radarrApiClient.getMovieByTvdbId(lookupId),
+          });
+          movieResponse = matchedResult?.result;
+          if (movieResponse?.tmdbId) {
+            this.moviesByTmdbId.set(movieResponse.tmdbId, movieResponse);
+          }
+        }
+      } else {
+        const matchedResult = await findServarrLookupMatch(lookupCandidates, {
+          tmdb: (lookupId) => radarrApiClient.getMovieByTmdbId(lookupId),
+          tvdb: (lookupId) => radarrApiClient.getMovieByTvdbId(lookupId),
+        });
+        movieResponse = matchedResult?.result;
+      }
 
       if (!movieResponse) {
         const attemptedIds = formatServarrLookupCandidates(lookupCandidates);
