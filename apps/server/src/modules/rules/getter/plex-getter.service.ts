@@ -80,7 +80,7 @@ export class PlexGetterService {
           return metadata.addedAt ? new Date(+metadata.addedAt * 1000) : null;
         }
         case 'seenBy': {
-          const plexUsers = await this.plexApi.getCorrectedUsers(false);
+          const plexUsers = await this.plexApi.getCorrectedUsers();
 
           const viewers: PlexSeenBy[] = await this.plexApi
             .getWatchHistory(metadata.ratingKey)
@@ -287,7 +287,7 @@ export class PlexGetterService {
           return item.Genre ? item.Genre.map((el) => el.tag) : null;
         }
         case 'sw_allEpisodesSeenBy': {
-          const plexUsers = await this.plexApi.getCorrectedUsers(false);
+          const plexUsers = await this.plexApi.getCorrectedUsers();
 
           const seasons =
             metadata.type !== 'season'
@@ -330,7 +330,7 @@ export class PlexGetterService {
           return [];
         }
         case 'sw_watchers': {
-          const plexUsers = await this.plexApi.getCorrectedUsers(false);
+          const plexUsers = await this.plexApi.getCorrectedUsers();
 
           const watchHistory = await this.plexApi.getWatchHistory(
             metadata.ratingKey,
