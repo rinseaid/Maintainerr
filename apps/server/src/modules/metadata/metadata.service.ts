@@ -29,8 +29,7 @@ export class MetadataService {
     MetadataProviderPreference.TMDB_PRIMARY;
 
   private static readonly CACHE_TTL_DAYS = 30;
-  // L1: in-memory for same-process hits (fast); L2: SQLite for cross-restart persistence
-  private readonly l1Cache = new Map<string, ResolvedMediaIds | undefined>();
+
 
   constructor(
     @Inject(MetadataProviders)
@@ -213,25 +212,16 @@ export class MetadataService {
       return this._resolveIdsFromMediaItem(item, requiredProviderKeys);
     }
 
-    // L1: in-memory hit
-    if (this.l1Cache.has(item.id)) {
-      return this.l1Cache.get(item.id);
-    }
-
-    // L2: SQLite hit
+    // SQLite cache hit
     const cached = await this.cacheRepo.findOne({
       where: { mediaServerId: item.id },
     });
     if (cached && cached.cachedAt >= this.cacheCutoffDate()) {
-      const resolved = JSON.parse(cached.resolvedIds) as ResolvedMediaIds | null;
-      const result = resolved ?? undefined;
-      this.l1Cache.set(item.id, result);
-      return result;
+      return JSON.parse(cached.resolvedIds) as ResolvedMediaIds ?? undefined;
     }
 
-    // Cache miss — resolve and write through to both layers
+    // Cache miss — resolve and write through
     const result = await this._resolveIdsFromMediaItem(item);
-    this.l1Cache.set(item.id, result);
     await this.cacheRepo.upsert(
       {
         mediaServerId: item.id,
