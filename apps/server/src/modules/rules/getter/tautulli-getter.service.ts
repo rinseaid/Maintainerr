@@ -36,8 +36,21 @@ export class TautulliGetterService {
     ).props;
   }
 
+  // Cap history cache to avoid unbounded growth on large collections (e.g. 3000+ movies)
+  private static readonly HISTORY_CACHE_MAX = 500;
   private historyCache = new Map<string, TautulliHistoryItem[] | null>();
   private metadataCache = new Map<string, TautulliMetadata>();
+
+  private setHistoryCache(key: string, value: TautulliHistoryItem[] | null) {
+    if (
+      !this.historyCache.has(key) &&
+      this.historyCache.size >= TautulliGetterService.HISTORY_CACHE_MAX
+    ) {
+      // Evict oldest entry (Maps preserve insertion order)
+      this.historyCache.delete(this.historyCache.keys().next().value);
+    }
+    this.historyCache.set(key, value);
+  }
 
   clearCache(): void {
     this.historyCache.clear();
@@ -240,7 +253,7 @@ export class TautulliGetterService {
     }
 
     const history = await this.tautulliApi.getHistory(options);
-    this.historyCache.set(cacheKey, history);
+    this.setHistoryCache(cacheKey, history);
     return history;
   }
 
