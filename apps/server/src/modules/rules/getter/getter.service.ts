@@ -91,10 +91,6 @@ export class ValueGetterService {
     this.tautulliGetter.clearCache();
     // Plex in-memory children/users caches — reset each run
     this.plexGetter.clearRunCaches();
-    // Bulk Tautulli pre-fetch: fetched once per 4-hour window, shared across all
-    // collections in the same cycle. warmBulkHistoryCache() is a no-op if the
-    // cache is still fresh (< 4hr old), so safe to call for every collection.
-    await this.tautulliGetter.warmBulkHistoryCache();
     // Sonarr/Radarr/metadata caches persist across runs — warm only if cold
     if (ruleGroup.collection?.sonarrSettingsId) {
       await this.sonarrGetter.warmSeriesCache(
