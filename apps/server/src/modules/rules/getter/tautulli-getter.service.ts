@@ -62,17 +62,6 @@ export class TautulliGetterService {
     this.metadataCache.clear();
   }
 
-      if (item.grandparent_rating_key) {
-        const gpk = String(item.grandparent_rating_key);
-        if (!this.bulkByGrandparentKey.has(gpk)) this.bulkByGrandparentKey.set(gpk, []);
-        this.bulkByGrandparentKey.get(gpk)!.push(item);
-      }
-    }
-    this.bulkHistoryWarmed = true;
-    this.bulkCachedAt = new Date();
-    this.logger.log(`Bulk Tautulli history cache warmed: ${allHistory.length} entries indexed`);
-  }
-
   async get(
     id: number,
     libItem: MediaItem,
