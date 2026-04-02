@@ -91,6 +91,8 @@ export class ValueGetterService {
     this.tautulliGetter.clearCache();
     // Plex in-memory children/users caches — reset each run
     this.plexGetter.clearRunCaches();
+    // Bulk-pre-fetch all Tautulli history once (covers all items this run)
+    await this.tautulliGetter.warmBulkHistoryCache();
     // Sonarr/Radarr/metadata caches persist across runs — warm only if cold
     if (ruleGroup.collection?.sonarrSettingsId) {
       await this.sonarrGetter.warmSeriesCache(

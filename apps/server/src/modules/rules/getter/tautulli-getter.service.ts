@@ -10,6 +10,7 @@ import {
   TautulliMetadata,
 } from '../../api/tautulli-api/tautulli-api.service';
 import { Collection } from '../../collections/entities/collection.entities';
+import { TautulliHistoryCache } from '../entities/tautulli-history-cache.entity';
 import { MaintainerrLogger } from '../../logging/logs.service';
 import {
   Application,
@@ -27,6 +28,8 @@ export class TautulliGetterService {
     private readonly plexApi: PlexApiService,
     @InjectRepository(Collection)
     private readonly collectionRepository: Repository<Collection>,
+    @InjectRepository(TautulliHistoryCache)
+    private readonly historyCacheRepo: Repository<TautulliHistoryCache>,
     private readonly logger: MaintainerrLogger,
   ) {
     logger.setContext(TautulliGetterService.name);
@@ -38,8 +41,15 @@ export class TautulliGetterService {
 
   // Cap history cache to avoid unbounded growth on large collections (e.g. 3000+ movies)
   private static readonly HISTORY_CACHE_MAX = 500;
+  private static readonly HISTORY_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours (prevents cold-cache at 8 AM run)
   private historyCache = new Map<string, TautulliHistoryItem[] | null>();
   private metadataCache = new Map<string, TautulliMetadata>();
+
+  // Bulk pre-fetch cache: populated once per run to avoid per-item API calls
+  private bulkByRatingKey = new Map<string, TautulliHistoryItem[]>();
+  private bulkByParentKey = new Map<string, TautulliHistoryItem[]>();
+  private bulkByGrandparentKey = new Map<string, TautulliHistoryItem[]>();
+  private bulkHistoryWarmed = false;
 
   private setHistoryCache(key: string, value: TautulliHistoryItem[] | null) {
     if (
@@ -55,6 +65,39 @@ export class TautulliGetterService {
   clearCache(): void {
     this.historyCache.clear();
     this.metadataCache.clear();
+    this.bulkByRatingKey.clear();
+    this.bulkByParentKey.clear();
+    this.bulkByGrandparentKey.clear();
+    this.bulkHistoryWarmed = false;
+  }
+
+  async warmBulkHistoryCache(): Promise<void> {
+    if (this.bulkHistoryWarmed) return;
+    this.logger.log("Pre-fetching all Tautulli history for bulk in-memory cache...");
+    const allHistory = await this.tautulliApi.getHistory({});
+    if (!allHistory) {
+      this.bulkHistoryWarmed = true;
+      return;
+    }
+    for (const item of allHistory) {
+      const rk = String(item.rating_key);
+      if (!this.bulkByRatingKey.has(rk)) this.bulkByRatingKey.set(rk, []);
+      this.bulkByRatingKey.get(rk)!.push(item);
+
+      if (item.parent_rating_key) {
+        const pk = String(item.parent_rating_key);
+        if (!this.bulkByParentKey.has(pk)) this.bulkByParentKey.set(pk, []);
+        this.bulkByParentKey.get(pk)!.push(item);
+      }
+
+      if (item.grandparent_rating_key) {
+        const gpk = String(item.grandparent_rating_key);
+        if (!this.bulkByGrandparentKey.has(gpk)) this.bulkByGrandparentKey.set(gpk, []);
+        this.bulkByGrandparentKey.get(gpk)!.push(item);
+      }
+    }
+    this.bulkHistoryWarmed = true;
+    this.logger.log(`Bulk Tautulli history cache warmed: ${allHistory.length} entries indexed`);
   }
 
   async get(
@@ -236,8 +279,35 @@ export class TautulliGetterService {
 
   private async getHistoryForMetadata(metadata: TautulliMetadata) {
     const cacheKey = `${metadata.media_type}:${metadata.rating_key}`;
+
+    // L1: in-memory (within a single run)
     if (this.historyCache.has(cacheKey)) {
       return this.historyCache.get(cacheKey);
+    }
+
+    // L1.5: bulk in-memory pre-fetch (one fetch covers all items this run)
+    if (this.bulkHistoryWarmed) {
+      let bulkHistory: TautulliHistoryItem[] | undefined;
+      if (metadata.media_type === "movie" || metadata.media_type === "episode") {
+        bulkHistory = this.bulkByRatingKey.get(String(metadata.rating_key)) ?? [];
+      } else if (metadata.media_type === "season") {
+        bulkHistory = this.bulkByParentKey.get(String(metadata.rating_key)) ?? [];
+      } else if (metadata.media_type === "show") {
+        bulkHistory = this.bulkByGrandparentKey.get(String(metadata.rating_key)) ?? [];
+      }
+      if (bulkHistory !== undefined) {
+        this.setHistoryCache(cacheKey, bulkHistory);
+        return bulkHistory;
+      }
+    }
+
+    // L2: SQLite (across runs, 12-hour TTL)
+    const cached = await this.historyCacheRepo.findOne({ where: { cacheKey } });
+    const cutoff = new Date(Date.now() - TautulliGetterService.HISTORY_CACHE_TTL_MS);
+    if (cached && new Date(cached.cachedAt as unknown as string) >= cutoff) {
+      const history = JSON.parse(cached.historyJson) as TautulliHistoryItem[];
+      this.setHistoryCache(cacheKey, history);
+      return history;
     }
 
     const options: TautulliHistoryRequestOptions = {};
@@ -253,6 +323,13 @@ export class TautulliGetterService {
     }
 
     const history = await this.tautulliApi.getHistory(options);
+
+    // Persist to SQLite for next run
+    await this.historyCacheRepo.upsert(
+      { cacheKey, historyJson: JSON.stringify(history ?? []), cachedAt: new Date() },
+      ['cacheKey'],
+    );
+
     this.setHistoryCache(cacheKey, history);
     return history;
   }

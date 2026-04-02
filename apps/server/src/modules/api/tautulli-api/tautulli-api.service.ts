@@ -59,6 +59,8 @@ export interface TautulliHistoryItem {
   percent_complete: number;
   stopped: number;
   rating_key: number;
+  parent_rating_key?: number;
+  grandparent_rating_key?: number;
   media_index: number;
   parent_media_index: number;
 }
