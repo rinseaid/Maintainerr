@@ -89,6 +89,8 @@ export class ValueGetterService {
   async warmCaches(ruleGroup: RulesDto): Promise<void> {
     // Tautulli history reflects real-time watch activity — reset each run
     this.tautulliGetter.clearCache();
+    // Plex in-memory children/users caches — reset each run
+    this.plexGetter.clearRunCaches();
     // Sonarr/Radarr/metadata caches persist across runs — warm only if cold
     if (ruleGroup.collection?.sonarrSettingsId) {
       await this.sonarrGetter.warmSeriesCache(
@@ -105,6 +107,7 @@ export class ValueGetterService {
   clearCaches(): void {
     // Tautulli history resets each run — watch state changes in real time.
     this.tautulliGetter.clearCache();
+    this.plexGetter.clearRunCaches();
     // Sonarr/Radarr full objects are large — clear between run cycles to avoid
     // unbounded memory growth. The warm-guard prevents redundant bulk fetches
     // within a single run cycle when multiple collections share the same instance.

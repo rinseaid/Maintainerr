@@ -10,6 +10,10 @@ import {
 } from '../../..//modules/api/plex-api/interfaces/library.interfaces';
 import { PlexApiService } from '../../../modules/api/plex-api/plex-api.service';
 import { PlexAdapterService } from '../../api/media-server/plex/plex-adapter.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { PlexMetadataCache } from '../entities/plex-metadata-cache.entity';
+import { PlexWatchHistoryCache } from '../entities/plex-watch-history-cache.entity';
 import { PlexMetadata } from '../../api/plex-api/interfaces/media.interface';
 import { MaintainerrLogger } from '../../logging/logs.service';
 import {
@@ -25,9 +29,20 @@ export class PlexGetterService {
   plexProperties: Property[];
   private readonly metadataRequestOptions = { includeExternalMedia: true };
 
+  private static readonly METADATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  private static readonly WATCH_HISTORY_CACHE_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+  // In-memory caches for children and users (cleared between runs)
+  private childrenCache = new Map<string, any[]>();
+  private usersCache: any[] | null = null;
+
   constructor(
     private readonly plexApi: PlexApiService,
     private readonly plexAdapter: PlexAdapterService,
+    @InjectRepository(PlexMetadataCache)
+    private readonly metadataCacheRepo: Repository<PlexMetadataCache>,
+    @InjectRepository(PlexWatchHistoryCache)
+    private readonly watchHistoryCacheRepo: Repository<PlexWatchHistoryCache>,
     private readonly logger: MaintainerrLogger,
   ) {
     logger.setContext(PlexGetterService.name);
@@ -48,30 +63,21 @@ export class PlexGetterService {
 
       // fetch metadata, parent & grandparent from cache, this data is more complete
       // libItem.id maps to Plex's ratingKey
-      const metadata: PlexMetadata = await this.plexApi.getMetadata(
-        libItem.id,
-        this.metadataRequestOptions,
-      );
+      const metadata: PlexMetadata = await this.getCachedMetadata(libItem.id);
 
       // Parent/grandparent metadata is only needed for some properties.
       // Lazy-load and memoize so we don't fetch unless a case uses it.
       let parentPromise: Promise<PlexMetadata> | undefined;
       const getParent = async (): Promise<PlexMetadata | undefined> => {
         if (!metadata?.parentRatingKey) return undefined;
-        parentPromise ??= this.plexApi.getMetadata(
-          metadata.parentRatingKey,
-          this.metadataRequestOptions,
-        );
+        parentPromise ??= this.getCachedMetadata(metadata.parentRatingKey);
         return parentPromise;
       };
 
       let grandparentPromise: Promise<PlexMetadata> | undefined;
       const getGrandparent = async (): Promise<PlexMetadata | undefined> => {
         if (!metadata?.grandparentRatingKey) return undefined;
-        grandparentPromise ??= this.plexApi.getMetadata(
-          metadata.grandparentRatingKey,
-          this.metadataRequestOptions,
-        );
+        grandparentPromise ??= this.getCachedMetadata(metadata.grandparentRatingKey);
         return grandparentPromise;
       };
 
@@ -80,13 +86,9 @@ export class PlexGetterService {
           return metadata.addedAt ? new Date(+metadata.addedAt * 1000) : null;
         }
         case 'seenBy': {
-          const plexUsers = await this.plexApi.getCorrectedUsers();
+          const plexUsers = await this.getCachedUsers();
 
-          const viewers: PlexSeenBy[] = await this.plexApi
-            .getWatchHistory(metadata.ratingKey)
-            .catch(() => {
-              return null;
-            });
+          const viewers: PlexSeenBy[] = await this.getCachedWatchHistory(metadata.ratingKey);
           if (viewers) {
             const viewerIds = viewers.map((el) => +el.accountID);
             return plexUsers
@@ -167,12 +169,10 @@ export class PlexGetterService {
 
             const seasons =
               metadata.type !== 'season'
-                ? await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+                ? await this.getCachedChildren(metadata.ratingKey)
                 : [metadata];
             for (const season of seasons) {
-              const episodes = await this.plexApi.getChildrenMetadata(
-                season.ratingKey,
-              );
+              const episodes = await this.getCachedChildren(season.ratingKey);
               for (const episode of episodes) {
                 const playlists = await this.plexApi.getPlaylists(
                   episode.ratingKey,
@@ -200,12 +200,10 @@ export class PlexGetterService {
 
             const seasons =
               metadata.type !== 'season'
-                ? await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+                ? await this.getCachedChildren(metadata.ratingKey)
                 : [metadata];
             for (const season of seasons) {
-              const episodes = await this.plexApi.getChildrenMetadata(
-                season.ratingKey,
-              );
+              const episodes = await this.getCachedChildren(season.ratingKey);
               for (const episode of episodes) {
                 const playlists = await this.plexApi.getPlaylists(
                   episode.ratingKey,
@@ -246,8 +244,7 @@ export class PlexGetterService {
             : null;
         }
         case 'lastViewedAt': {
-          return await this.plexApi
-            .getWatchHistory(metadata.ratingKey)
+          return await this.getCachedWatchHistory(metadata.ratingKey)
             .then((seenby) => {
               if (seenby.length > 0) {
                 return new Date(
@@ -287,17 +284,15 @@ export class PlexGetterService {
           return item.Genre ? item.Genre.map((el) => el.tag) : null;
         }
         case 'sw_allEpisodesSeenBy': {
-          const plexUsers = await this.plexApi.getCorrectedUsers();
+          const plexUsers = await this.getCachedUsers();
 
           const seasons =
             metadata.type !== 'season'
-              ? await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+              ? await this.getCachedChildren(metadata.ratingKey)
               : [metadata];
           const allViewers = plexUsers.slice();
           for (const season of seasons) {
-            const episodes = await this.plexApi.getChildrenMetadata(
-              season.ratingKey,
-            );
+            const episodes = await this.getCachedChildren(season.ratingKey);
             for (const episode of episodes) {
               const viewers: PlexSeenBy[] = await this.plexApi
                 .getWatchHistory(episode.ratingKey)
@@ -330,11 +325,9 @@ export class PlexGetterService {
           return [];
         }
         case 'sw_watchers': {
-          const plexUsers = await this.plexApi.getCorrectedUsers();
+          const plexUsers = await this.getCachedUsers();
 
-          const watchHistory = await this.plexApi.getWatchHistory(
-            metadata.ratingKey,
-          );
+          const watchHistory = await this.getCachedWatchHistory(metadata.ratingKey);
 
           const viewers = watchHistory
             ? watchHistory.map((el) => +el.accountID)
@@ -349,9 +342,7 @@ export class PlexGetterService {
           return [];
         }
         case 'sw_lastWatched': {
-          let watchHistory = await this.plexApi.getWatchHistory(
-            metadata.ratingKey,
-          );
+          let watchHistory = await this.getCachedWatchHistory(metadata.ratingKey);
           watchHistory?.sort((a, b) => a.parentIndex - b.parentIndex).reverse();
           watchHistory = watchHistory?.filter(
             (el) => el.parentIndex === watchHistory[0].parentIndex,
@@ -363,9 +354,7 @@ export class PlexGetterService {
         }
         case 'sw_episodes': {
           if (metadata.type === 'season') {
-            const eps = await this.plexApi.getChildrenMetadata(
-              metadata.ratingKey,
-            );
+            const eps = await this.getCachedChildren(metadata.ratingKey);
             return eps.length ? eps.length : 0;
           }
 
@@ -375,16 +364,12 @@ export class PlexGetterService {
           let viewCount = 0;
           const seasons =
             metadata.type !== 'season'
-              ? await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+              ? await this.getCachedChildren(metadata.ratingKey)
               : [metadata];
           for (const season of seasons) {
-            const episodes = await this.plexApi.getChildrenMetadata(
-              season.ratingKey,
-            );
+            const episodes = await this.getCachedChildren(season.ratingKey);
             for (const episode of episodes) {
-              const views = await this.plexApi.getWatchHistory(
-                episode.ratingKey,
-              );
+              const views = await this.getCachedWatchHistory(episode.ratingKey);
               if (views?.length > 0) {
                 viewCount++;
               }
@@ -397,25 +382,19 @@ export class PlexGetterService {
 
           // for episodes
           if (metadata.type === 'episode') {
-            const views = await this.plexApi.getWatchHistory(
-              metadata.ratingKey,
-            );
+            const views = await this.getCachedWatchHistory(metadata.ratingKey);
             viewCount =
               views?.length > 0 ? viewCount + views.length : viewCount;
           } else {
             // for seasons & shows
             const seasons =
               metadata.type !== 'season'
-                ? await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+                ? await this.getCachedChildren(metadata.ratingKey)
                 : [metadata];
             for (const season of seasons) {
-              const episodes = await this.plexApi.getChildrenMetadata(
-                season.ratingKey,
-              );
+              const episodes = await this.getCachedChildren(season.ratingKey);
               for (const episode of episodes) {
-                const views = await this.plexApi.getWatchHistory(
-                  episode.ratingKey,
-                );
+                const views = await this.getCachedWatchHistory(episode.ratingKey);
                 viewCount =
                   views?.length > 0 ? viewCount + views.length : viewCount;
               }
@@ -427,7 +406,7 @@ export class PlexGetterService {
           const seasons =
             metadata.type !== 'season'
               ? (
-                  await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+                  await this.getCachedChildren(metadata.ratingKey)
                 ).sort((a, b) => a.index - b.index)
               : [metadata];
 
@@ -446,7 +425,7 @@ export class PlexGetterService {
           const seasons =
             metadata.type !== 'season'
               ? (
-                  await this.plexApi.getChildrenMetadata(metadata.ratingKey)
+                  await this.getCachedChildren(metadata.ratingKey)
                 ).sort((a, b) => a.index - b.index)
               : [metadata];
 
@@ -472,7 +451,7 @@ export class PlexGetterService {
           const media_uuid = guid.match(/plex:\/\/[a-z]+\/([a-z0-9]+)$/);
 
           const plexUsers: SimplePlexUser[] =
-            await this.plexApi.getCorrectedUsers();
+            await this.getCachedUsers();
 
           // When plex.tv is unreachable, no users will have UUIDs.
           // Return null to skip the rule rather than falsely report an empty watchlist.
@@ -512,7 +491,7 @@ export class PlexGetterService {
           const media_uuid = guid.match(/plex:\/\/[a-z]+\/([a-z0-9]+)$/);
 
           const plexUsers: SimplePlexUser[] =
-            await this.plexApi.getCorrectedUsers();
+            await this.getCachedUsers();
 
           // When plex.tv is unreachable, no users will have UUIDs.
           // Return null to skip the rule rather than falsely report an empty watchlist.
@@ -795,5 +774,55 @@ export class PlexGetterService {
       );
       return undefined;
     }
+  }
+
+  clearRunCaches(): void {
+    this.childrenCache.clear();
+    this.usersCache = null;
+  }
+
+  private async getCachedMetadata(ratingKey: string): Promise<PlexMetadata> {
+    const cached = await this.metadataCacheRepo.findOne({ where: { ratingKey } });
+    const cutoff = new Date(Date.now() - PlexGetterService.METADATA_CACHE_TTL_MS);
+    if (cached && new Date(cached.cachedAt as unknown as string) >= cutoff) {
+      return JSON.parse(cached.metadataJson) as PlexMetadata;
+    }
+    const metadata = await this.plexApi.getMetadata(ratingKey, this.metadataRequestOptions);
+    if (metadata) {
+      await this.metadataCacheRepo.upsert(
+        { ratingKey, metadataJson: JSON.stringify(metadata), cachedAt: new Date() },
+        ['ratingKey'],
+      );
+    }
+    return metadata;
+  }
+
+  private async getCachedWatchHistory(ratingKey: string): Promise<any[] | null> {
+    const cached = await this.watchHistoryCacheRepo.findOne({ where: { ratingKey } });
+    const cutoff = new Date(Date.now() - PlexGetterService.WATCH_HISTORY_CACHE_TTL_MS);
+    if (cached && new Date(cached.cachedAt as unknown as string) >= cutoff) {
+      return JSON.parse(cached.historyJson);
+    }
+    const history = await this.plexApi.getWatchHistory(ratingKey).catch(() => null);
+    await this.watchHistoryCacheRepo.upsert(
+      { ratingKey, historyJson: JSON.stringify(history ?? []), cachedAt: new Date() },
+      ['ratingKey'],
+    );
+    return history;
+  }
+
+  private async getCachedChildren(ratingKey: string): Promise<any[]> {
+    if (this.childrenCache.has(ratingKey)) {
+      return this.childrenCache.get(ratingKey);
+    }
+    const children = await this.plexApi.getChildrenMetadata(ratingKey);
+    this.childrenCache.set(ratingKey, children ?? []);
+    return children ?? [];
+  }
+
+  private async getCachedUsers(): Promise<any[]> {
+    if (this.usersCache) return this.usersCache;
+    this.usersCache = await this.plexApi.getCorrectedUsers();
+    return this.usersCache;
   }
 }

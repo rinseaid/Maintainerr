@@ -15,6 +15,9 @@ import { SonarrSettings } from '../settings/entities/sonarr_settings.entities';
 import { TasksModule } from '../tasks/tasks.module';
 import { RuleConstanstService } from './constants/constants.service';
 import { CommunityRuleKarma } from './entities/community-rule-karma.entities';
+import { TautulliHistoryCache } from './entities/tautulli-history-cache.entity';
+import { PlexMetadataCache } from './entities/plex-metadata-cache.entity';
+import { PlexWatchHistoryCache } from './entities/plex-watch-history-cache.entity';
 import { Exclusion } from './entities/exclusion.entities';
 import { RuleGroup } from './entities/rule-group.entities';
 import { Rules } from './entities/rules.entities';
@@ -54,6 +57,9 @@ import { RuleMaintenanceService } from './tasks/rule-maintenance.service';
       Settings,
       RadarrSettings,
       SonarrSettings,
+      TautulliHistoryCache,
+      PlexMetadataCache,
+      PlexWatchHistoryCache,
     ]),
     SeerrApiModule,
     TautulliApiModule,
