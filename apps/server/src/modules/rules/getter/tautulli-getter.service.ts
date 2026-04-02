@@ -45,11 +45,15 @@ export class TautulliGetterService {
   private historyCache = new Map<string, TautulliHistoryItem[] | null>();
   private metadataCache = new Map<string, TautulliMetadata>();
 
-  // Bulk pre-fetch cache: populated once per run to avoid per-item API calls
+  // Bulk pre-fetch cache: populated once per 4-hour window to avoid per-item API calls
   private bulkByRatingKey = new Map<string, TautulliHistoryItem[]>();
   private bulkByParentKey = new Map<string, TautulliHistoryItem[]>();
   private bulkByGrandparentKey = new Map<string, TautulliHistoryItem[]>();
   private bulkHistoryWarmed = false;
+  private bulkCachedAt: Date | null = null;
+  // Bulk cache TTL: 4 hours (covers all collections in one 8-hr cron cycle,
+  // but expires before the next cycle so data stays fresh)
+  private static readonly BULK_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
   private setHistoryCache(key: string, value: TautulliHistoryItem[] | null) {
     if (
@@ -63,8 +67,15 @@ export class TautulliGetterService {
   }
 
   clearCache(): void {
+    // Clear per-run L1 caches (historyCache, metadataCache).
+    // Bulk cache (bulkByRatingKey etc.) is intentionally NOT cleared here —
+    // it persists across all collections in a run cycle so we only fetch once.
     this.historyCache.clear();
     this.metadataCache.clear();
+  }
+
+  /** Called once before the first collection in each run cycle to expire the bulk cache. */
+  clearBulkCache(): void {
     this.bulkByRatingKey.clear();
     this.bulkByParentKey.clear();
     this.bulkByGrandparentKey.clear();
@@ -72,10 +83,32 @@ export class TautulliGetterService {
   }
 
   async warmBulkHistoryCache(): Promise<void> {
-    if (this.bulkHistoryWarmed) return;
+    // Reuse bulk cache if it was populated within the last 4 hours
+    // (covers all collections in the same 8-hr cron cycle)
+    if (this.bulkHistoryWarmed && this.bulkCachedAt) {
+      const age = Date.now() - this.bulkCachedAt.getTime();
+      if (age < TautulliGetterService.BULK_CACHE_TTL_MS) {
+        return;
+      }
+      // Expired — clear and re-fetch
+      this.clearBulkCache();
+    }
     this.logger.log("Pre-fetching all Tautulli history for bulk in-memory cache...");
-    const allHistory = await this.tautulliApi.getHistory({});
-    if (!allHistory) {
+    // Use large page size to minimise the number of HTTP round-trips.
+    // MAX_PAGE_SIZE (100) would require 430+ sequential calls for a typical library;
+    // 10 000 records per page reduces that to ~5 calls.
+    const BULK_PAGE_SIZE = 10000;
+    const allHistory: TautulliHistoryItem[] = [];
+    let start = 0;
+    while (true) {
+      const page = await this.tautulliApi.getPaginatedHistory({ start, length: BULK_PAGE_SIZE });
+      if (!page?.data?.length) break;
+      allHistory.push(...page.data);
+      const total = (page as any).recordsFiltered ?? 0;
+      if (!total || allHistory.length >= total) break;
+      start += BULK_PAGE_SIZE;
+    }
+    if (allHistory.length === 0) {
       this.bulkHistoryWarmed = true;
       return;
     }
@@ -97,6 +130,7 @@ export class TautulliGetterService {
       }
     }
     this.bulkHistoryWarmed = true;
+    this.bulkCachedAt = new Date();
     this.logger.log(`Bulk Tautulli history cache warmed: ${allHistory.length} entries indexed`);
   }
 
