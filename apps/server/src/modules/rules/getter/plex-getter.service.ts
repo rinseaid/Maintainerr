@@ -35,6 +35,7 @@ export class PlexGetterService {
   // In-memory caches for children and users (cleared between runs)
   private childrenCache = new Map<string, any[]>();
   private usersCache: any[] | null = null;
+  private usersLocalCache: any[] | null = null;
 
   constructor(
     private readonly plexApi: PlexApiService,
@@ -87,13 +88,18 @@ export class PlexGetterService {
         }
         case 'seenBy': {
           const plexUsers = await this.getCachedUsers();
+          const plexUsersLocal = await this.getCachedUsersLocal();
 
           const viewers: PlexSeenBy[] = await this.getCachedWatchHistory(metadata.ratingKey);
           if (viewers) {
             const viewerIds = viewers.map((el) => +el.accountID);
-            return plexUsers
+            const fromPlexTv = plexUsers
               .filter((el) => viewerIds.includes(el.plexId))
               .map((el) => el.username);
+            const fromLocal = plexUsersLocal
+              .filter((el) => viewerIds.includes(el.plexId))
+              .map((el) => el.username);
+            return [...new Set([...fromPlexTv, ...fromLocal])];
           } else {
             return [];
           }
@@ -326,6 +332,7 @@ export class PlexGetterService {
         }
         case 'sw_watchers': {
           const plexUsers = await this.getCachedUsers();
+          const plexUsersLocal = await this.getCachedUsersLocal();
 
           const watchHistory = await this.getCachedWatchHistory(metadata.ratingKey);
 
@@ -335,9 +342,13 @@ export class PlexGetterService {
           const uniqueViewers = [...new Set(viewers)];
 
           if (uniqueViewers && uniqueViewers.length > 0) {
-            return plexUsers
+            const fromPlexTv = plexUsers
               .filter((el) => uniqueViewers.includes(+el.plexId))
               .map((el) => el.username);
+            const fromLocal = plexUsersLocal
+              .filter((el) => uniqueViewers.includes(+el.plexId))
+              .map((el) => el.username);
+            return [...new Set([...fromPlexTv, ...fromLocal])];
           }
           return [];
         }
@@ -824,5 +835,11 @@ export class PlexGetterService {
     if (this.usersCache) return this.usersCache;
     this.usersCache = await this.plexApi.getCorrectedUsers();
     return this.usersCache;
+  }
+
+  private async getCachedUsersLocal(): Promise<any[]> {
+    if (this.usersLocalCache) return this.usersLocalCache;
+    this.usersLocalCache = await this.plexApi.getCorrectedUsers(false);
+    return this.usersLocalCache;
   }
 }
